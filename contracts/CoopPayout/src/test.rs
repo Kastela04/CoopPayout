@@ -1,126 +1,129 @@
 #![cfg(test)]
-use soroban_sdk::{Env, Address, BytesN, token, testutils::Address as TestAddress, IntoVal};
-use crate::CoopPayout;
+use soroban_sdk::{Env, Address, BytesN, token, testutils::Address as TestAddress};
+use crate::GigEscrow;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{Symbol, Vec};
+    use soroban_sdk::IntoVal;
 
-    // Helper to create addresses
     fn addr(env: &Env, n: u8) -> Address {
         Address::from_contract_id(&env, &BytesN::from_array(env, &[n;32]))
     }
 
-    // Test 1: Happy path — owner initializes, deposits, allocates, member withdraws (native)
+    // Test 1: Happy path — create escrow, mark delivered, release (token transfer)
     #[test]
-    fn happy_path_withdraw_native() {
+    fn happy_path_escrow_release() {
         let env = Env::default();
         env.mock_all_auths();
-        let owner = addr(&env, 1);
-        let member = addr(&env, 2);
+        let client = addr(&env, 1);
+        let freelancer = addr(&env, 2);
+        let token_id = BytesN::from_array(&env, &[5u8;32]);
 
-        // Initialize
-        CoopPayout::initialize(env.clone(), owner.clone());
+        GigEscrow::initialize(env.clone());
 
-        // Deposit 1000
-        CoopPayout::deposit(env.clone(), 1000);
+        // Client creates escrow
+        env.set_invoker(client.clone());
+        let id = GigEscrow::create_escrow(env.clone(), freelancer.clone(), token_id.clone(), 400);
 
-        // Allocate 300 to member
-        CoopPayout::allocate(env.clone(), member.clone(), 300);
+        // Freelancer marks delivered
+        env.set_invoker(freelancer.clone());
+        GigEscrow::mark_delivered(env.clone(), id);
 
-        // Member withdraws (native)
-        env.set_invoker(member.clone());
-        CoopPayout::withdraw(env.clone(), None);
+        // Client releases
+        env.set_invoker(client.clone());
+        GigEscrow::release(env.clone(), id);
 
-        // Assert allocation is zero and contract balance decreased
-        let alloc = CoopPayout::allocation_of(env.clone(), member.clone());
-        assert_eq!(alloc, 0);
-        let bal = CoopPayout::contract_balance(env.clone());
-        assert_eq!(bal, 700);
+        // Verify escrow state released
+        let e = GigEscrow::get_escrow(env.clone(), id);
+        assert!(e.released);
     }
 
-    // Test 2: Edge case — unauthorized allocate attempt
+    // Test 2: Edge case — unauthorized release attempt
     #[test]
-    fn unauthorized_allocate_fails() {
+    fn unauthorized_release_fails() {
         let env = Env::default();
         env.mock_all_auths();
-        let owner = addr(&env, 1);
+        let client = addr(&env, 1);
         let attacker = addr(&env, 9);
-        let member = addr(&env, 2);
+        let freelancer = addr(&env, 2);
+        let token_id = BytesN::from_array(&env, &[6u8;32]);
 
-        CoopPayout::initialize(env.clone(), owner.clone());
-        CoopPayout::deposit(env.clone(), 500);
+        GigEscrow::initialize(env.clone());
+        env.set_invoker(client.clone());
+        let id = GigEscrow::create_escrow(env.clone(), freelancer.clone(), token_id.clone(), 200);
 
-        // Attacker tries to allocate
+        // Freelancer marks delivered
+        env.set_invoker(freelancer.clone());
+        GigEscrow::mark_delivered(env.clone(), id);
+
+        // Attacker tries to release
         env.set_invoker(attacker.clone());
         let res = std::panic::catch_unwind(|| {
-            CoopPayout::allocate(env.clone(), member.clone(), 100);
+            GigEscrow::release(env.clone(), id);
         });
         assert!(res.is_err());
     }
 
-    // Test 3: State verification after multiple allocations
+    // Test 3: State verification after create
     #[test]
-    fn state_verification_allocations() {
+    fn state_verification_after_create() {
         let env = Env::default();
         env.mock_all_auths();
-        let owner = addr(&env, 1);
-        let a = addr(&env, 2);
-        let b = addr(&env, 3);
-
-        CoopPayout::initialize(env.clone(), owner.clone());
-        CoopPayout::deposit(env.clone(), 1000);
-
-        CoopPayout::allocate(env.clone(), a.clone(), 200);
-        CoopPayout::allocate(env.clone(), b.clone(), 300);
-
-        let alloc_a = CoopPayout::allocation_of(env.clone(), a.clone());
-        let alloc_b = CoopPayout::allocation_of(env.clone(), b.clone());
-        assert_eq!(alloc_a, 200);
-        assert_eq!(alloc_b, 300);
-        let bal = CoopPayout::contract_balance(env.clone());
-        assert_eq!(bal, 1000);
-    }
-
-    // Test 4: Withdraw token path (uses token client mock)
-    #[test]
-    fn withdraw_token_transfers() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let owner = addr(&env, 1);
-        let member = addr(&env, 2);
-
-        CoopPayout::initialize(env.clone(), owner.clone());
-
-        // Create a mock token contract id
+        let client = addr(&env, 1);
+        let freelancer = addr(&env, 2);
         let token_id = BytesN::from_array(&env, &[7u8;32]);
-        // For test, we don't need to mint; token::Client::transfer will be callable in test env
 
-        // Owner allocates token amount
-        CoopPayout::allocate(env.clone(), member.clone(), 150);
+        GigEscrow::initialize(env.clone());
+        env.set_invoker(client.clone());
+        let id = GigEscrow::create_escrow(env.clone(), freelancer.clone(), token_id.clone(), 1000);
 
-        // Member withdraws token
-        env.set_invoker(member.clone());
-        CoopPayout::withdraw(env.clone(), Some(token_id.clone()));
-
-        // Allocation should be zero
-        let alloc = CoopPayout::allocation_of(env.clone(), member.clone());
-        assert_eq!(alloc, 0);
+        let e = GigEscrow::get_escrow(env.clone(), id);
+        assert_eq!(e.amount, 1000);
+        assert_eq!(e.delivered, false);
+        assert_eq!(e.released, false);
     }
 
-    // Test 5: Failure when withdrawing with no allocation
+    // Test 4: Failure when releasing before delivery
     #[test]
-    fn withdraw_no_allocation_fails() {
+    fn release_before_delivery_fails() {
         let env = Env::default();
         env.mock_all_auths();
-        let owner = addr(&env, 1);
-        let member = addr(&env, 2);
+        let client = addr(&env, 1);
+        let freelancer = addr(&env, 2);
+        let token_id = BytesN::from_array(&env, &[8u8;32]);
 
-        CoopPayout::initialize(env.clone(), owner.clone());
-        env.set_invoker(member.clone());
+        GigEscrow::initialize(env.clone());
+        env.set_invoker(client.clone());
+        let id = GigEscrow::create_escrow(env.clone(), freelancer.clone(), token_id.clone(), 50);
+
+        // Client tries to release before freelancer marks delivered
+        env.set_invoker(client.clone());
         let res = std::panic::catch_unwind(|| {
-            CoopPayout::withdraw(env.clone(), None);
+            GigEscrow::release(env.clone(), id);
+        });
+        assert!(res.is_err());
+    }
+
+    // Test 5: Duplicate delivery marking fails
+    #[test]
+    fn duplicate_mark_delivered_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = addr(&env, 1);
+        let freelancer = addr(&env, 2);
+        let token_id = BytesN::from_array(&env, &[9u8;32]);
+
+        GigEscrow::initialize(env.clone());
+        env.set_invoker(client.clone());
+        let id = GigEscrow::create_escrow(env.clone(), freelancer.clone(), token_id.clone(), 75);
+
+        env.set_invoker(freelancer.clone());
+        GigEscrow::mark_delivered(env.clone(), id);
+
+        // Second mark should fail
+        let res = std::panic::catch_unwind(|| {
+            GigEscrow::mark_delivered(env.clone(), id);
         });
         assert!(res.is_err());
     }

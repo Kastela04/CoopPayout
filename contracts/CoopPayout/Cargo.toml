@@ -1,16 +1,15 @@
 [package]
 name = "CoopPayout"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2021"
+publish = false
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["lib", "cdylib"]
+doctest = false
 
 [dependencies]
-soroban-sdk = "0.24.0"
+soroban-sdk = { workspace = true }
 
 [dev-dependencies]
-soroban-sdk = { version = "0.24.0", features = ["testutils"] }
-
-[profile.release]
-opt-level = "s"
+soroban-sdk = { workspace = true, features = ["testutils"] }
